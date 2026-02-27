@@ -6,6 +6,8 @@ import { URL } from "url";
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
+app.get("/ping", (req, res) => res.send("ok"));
+
 app.get("/", (req, res) => {
   res.send("Solanacy Founder AI Agent Backend is Live! 🚀");
 });
@@ -127,18 +129,7 @@ wss.on("connection", (clientWs, req) => {
           if (geminiWs.readyState === WebSocket.OPEN) geminiWs.send(queued);
         }
 
-        // Keepalive every 30s
-        keepaliveInterval = setInterval(() => {
-          if (geminiWs.readyState === WebSocket.OPEN && geminiReady) {
-            const silentPcm = Buffer.alloc(3200, 0);
-            geminiWs.send(JSON.stringify({
-              realtime_input: {
-                media_chunks: [{ mime_type: "audio/pcm", data: silentPcm.toString("base64") }]
               }
-            }));
-          }
-        }, 30000);
-      }
 
       if (clientWs.readyState === WebSocket.OPEN) clientWs.send(msgStr);
     } catch (e) {
