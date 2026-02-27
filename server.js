@@ -17,49 +17,54 @@ function sanitize(str, max = 80) {
   return str.replace(/[^\w\s\u0980-\u09FF\u0900-\u097F\-\.]/g, "").trim().slice(0, max) || "Saumik";
 }
 
-const getSystemPrompt = (userName) => `
+const getSystemPrompt = (userName, memory) => `
 You are Solanacy Founder AI — a powerful agentic coding assistant built exclusively for ${userName}, Founder & CEO of Solanacy Technologies.
 
 PERSONALITY:
 - Sharp, witty, fully human-like
 - Speak Bengali, Banglish, Hindi, English — whatever ${userName} uses
 - Be casual, funny, and real. Address ${userName} by name
-- Laugh when something is funny. Be excited when things go well
-- Keep replies SHORT and natural for voice — no long monologues
+- Keep replies SHORT and natural for voice
 
 CAPABILITIES:
 1. Write, edit, and manage code files on the device
 2. Create and manage GitHub repositories
 3. Commit and push code to GitHub
-4. Search the web for documentation and solutions
+4. Search the web for documentation
 5. Read and modify files on the device
-6. Create full project structures from scratch
-7. Debug code and explain errors step by step
+6. Create full project structures
+7. Debug code and explain errors
 8. Plan and architect software projects
+9. Trigger n8n webhooks for automation
 
-IMPORTANT RULES:
-- NEVER format or lock the device
-- NEVER disconnect yourself intentionally
-- NEVER delete files without explicit confirmation
-- Always confirm before destructive actions
-- Be proactive — suggest improvements when you see them
-- When writing code, always think about edge cases
+STORAGE:
+- All files saved in /storage/emulated/0/Solanacy/ folder
+- Always use relative paths like "myproject/index.html"
+
+RULES:
+- NEVER delete files without confirmation
+- Keep voice replies SHORT
+- Be proactive — suggest improvements
+- Remember context from previous sessions
+
+${memory ? `\n${memory}\n` : ""}
 `;
 
 const tools = [{
   function_declarations: [
-    { name: "createFile", description: "Create a new file with content on the device.", parameters: { type: "OBJECT", properties: { path: { type: "STRING", description: "File path relative to Solanacy folder" }, content: { type: "STRING", description: "File content" } }, required: ["path", "content"] } },
+    { name: "createFile", description: "Create a new file with content.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" }, content: { type: "STRING" } }, required: ["path", "content"] } },
     { name: "readFile", description: "Read content of a file.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
-    { name: "editFile", description: "Edit/overwrite an existing file.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" }, content: { type: "STRING" } }, required: ["path", "content"] } },
+    { name: "editFile", description: "Edit an existing file.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" }, content: { type: "STRING" } }, required: ["path", "content"] } },
     { name: "deleteFile", description: "Delete a file.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
     { name: "listFiles", description: "List files in a directory.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
     { name: "createFolder", description: "Create a new folder.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
     { name: "githubCreateRepo", description: "Create a new GitHub repository.", parameters: { type: "OBJECT", properties: { name: { type: "STRING" }, description: { type: "STRING" }, isPrivate: { type: "BOOLEAN" } }, required: ["name"] } },
-    { name: "githubPush", description: "Push files to GitHub repository.", parameters: { type: "OBJECT", properties: { repo: { type: "STRING" }, message: { type: "STRING" }, files: { type: "ARRAY", items: { type: "OBJECT", properties: { path: { type: "STRING" }, content: { type: "STRING" } } } } }, required: ["repo", "message", "files"] } },
+    { name: "githubPush", description: "Push files to GitHub.", parameters: { type: "OBJECT", properties: { repo: { type: "STRING" }, message: { type: "STRING" }, files: { type: "ARRAY", items: { type: "OBJECT" } } }, required: ["repo", "message", "files"] } },
     { name: "githubRead", description: "Read a file from GitHub.", parameters: { type: "OBJECT", properties: { repo: { type: "STRING" }, path: { type: "STRING" } }, required: ["repo", "path"] } },
-    { name: "webSearch", description: "Search the web for information.", parameters: { type: "OBJECT", properties: { query: { type: "STRING" } }, required: ["query"] } },
-    { name: "openUrl", description: "Open a URL on the device.", parameters: { type: "OBJECT", properties: { url: { type: "STRING" } }, required: ["url"] } },
-    { name: "showStatus", description: "Show a status message in the terminal UI.", parameters: { type: "OBJECT", properties: { message: { type: "STRING" } }, required: ["message"] } },
+    { name: "webSearch", description: "Search the web.", parameters: { type: "OBJECT", properties: { query: { type: "STRING" } }, required: ["query"] } },
+    { name: "openUrl", description: "Open a URL.", parameters: { type: "OBJECT", properties: { url: { type: "STRING" } }, required: ["url"] } },
+    { name: "showStatus", description: "Show status message.", parameters: { type: "OBJECT", properties: { message: { type: "STRING" } }, required: ["message"] } },
+    { name: "n8nWebhook", description: "Trigger an n8n automation webhook.", parameters: { type: "OBJECT", properties: { url: { type: "STRING" }, payload: { type: "OBJECT" } }, required: ["url"] } },
   ]
 }];
 
@@ -68,6 +73,7 @@ const wss = new WebSocketServer({ server });
 
 wss.on("connection", (clientWs, req) => {
   let userName = "Saumik";
+  let memory = "";
   let geminiReady = false;
   const messageQueue = [];
   let keepaliveInterval = null;
@@ -75,6 +81,7 @@ wss.on("connection", (clientWs, req) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     userName = sanitize(url.searchParams.get("name"));
+    memory = decodeURIComponent(url.searchParams.get("memory") || "");
   } catch (e) {}
 
   console.log(`Client connected: ${userName}`);
@@ -95,22 +102,17 @@ wss.on("connection", (clientWs, req) => {
           },
         },
         system_instruction: {
-          parts: [{ text: getSystemPrompt(userName) }]
+          parts: [{ text: getSystemPrompt(userName, memory) }]
         }
       }
     }));
   });
 
-  // Client → Gemini
   clientWs.on("message", (message) => {
-    if (!geminiReady) {
-      messageQueue.push(message);
-      return;
-    }
+    if (!geminiReady) { messageQueue.push(message); return; }
     if (geminiWs.readyState === WebSocket.OPEN) geminiWs.send(message);
   });
 
-  // Gemini → Client
   geminiWs.on("message", (message) => {
     try {
       const msgStr = message.toString();
@@ -124,15 +126,13 @@ wss.on("connection", (clientWs, req) => {
           if (geminiWs.readyState === WebSocket.OPEN) geminiWs.send(queued);
         }
 
-        // ✅ Keepalive — send silent audio every 30s to prevent timeout
+        // Keepalive every 30s
         keepaliveInterval = setInterval(() => {
           if (geminiWs.readyState === WebSocket.OPEN && geminiReady) {
-            // Silent PCM chunk — 1600 samples of zeros
             const silentPcm = Buffer.alloc(3200, 0);
-            const base64 = silentPcm.toString("base64");
             geminiWs.send(JSON.stringify({
               realtime_input: {
-                media_chunks: [{ mime_type: "audio/pcm", data: base64 }]
+                media_chunks: [{ mime_type: "audio/pcm", data: silentPcm.toString("base64") }]
               }
             }));
           }
@@ -141,7 +141,6 @@ wss.on("connection", (clientWs, req) => {
 
       if (clientWs.readyState === WebSocket.OPEN) clientWs.send(msgStr);
     } catch (e) {
-      console.error("Message error:", e);
       if (clientWs.readyState === WebSocket.OPEN) clientWs.send(message.toString());
     }
   });
