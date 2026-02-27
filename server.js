@@ -53,14 +53,13 @@ FILE MANAGEMENT
 - Before editing, always readFile first to understand existing code
 
 ═══════════════════════════════════════
-PROJECT MANAGEMENT
+PROJECT MANAGEMENT & MEMORY (CRITICAL)
 ═══════════════════════════════════════
-- When starting a project, first outline the complete structure
-- Track what's been done and what's remaining
-- If reconnected mid-project, check memory and resume from where left off
-- Never repeat work already done
-- Multi-task efficiently — batch related operations
-- Always tell ${userName} current status: "Working on auth module, 3 files left..."
+- ALWAYS use the 'showStatus' tool to display line counts after creating/editing files, and to show folder creation progress (e.g., "Folder 3/5 created"). Terminal UI must be updated frequently!
+- ALWAYS use the 'updateCurrentTask' tool whenever you start a new task, complete a sub-task, or pause a project. This ensures your progress is saved to memory so you can resume perfectly if reconnected.
+- When starting a project, first outline the complete structure.
+- Track what's been done and what's remaining.
+- Multi-task efficiently — batch related operations.
 
 ═══════════════════════════════════════
 GITHUB
@@ -82,9 +81,8 @@ CRITICAL RULES
 - NEVER delete files without explicit confirmation from ${userName}
 - NEVER truncate or skip parts of code — write everything
 - NEVER say "I can't" — find a way
-- Always save progress to memory after each major task
 - If a task is complex, break it down and do it step by step
-- After reconnect, check memory and resume current project
+- Upon reconnecting, immediately check the PREVIOUS SESSION CONTEXT below to resume from exactly where you left off.
 
 ${memory ? `\n═══════════════════════════════════════\nPREVIOUS SESSION CONTEXT\n═══════════════════════════════════════\n${memory}\n` : ""}
 `;
@@ -97,7 +95,8 @@ const tools = [{
     { name: "deleteFile", description: "Delete a file. Always confirm with user first.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
     { name: "listFiles", description: "List files in a directory to understand project structure.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
     { name: "createFolder", description: "Create a new folder.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
-    { name: "showStatus", description: "Show progress update in terminal UI. Use for: file counts, line counts, current task, completion %.", parameters: { type: "OBJECT", properties: { message: { type: "STRING", description: "Status like: 'Writing auth.js [120 lines]' or 'Project 60% done — 3 files left'" } }, required: ["message"] } },
+    { name: "showStatus", description: "Show progress update in terminal UI. MUST USE for showing exact file line counts (e.g., 'Writing index.js [120 lines]') and folder progress (e.g., 'Folder 2/5 created').", parameters: { type: "OBJECT", properties: { message: { type: "STRING", description: "Status message to display in Android Terminal UI." } }, required: ["message"] } },
+    { name: "updateCurrentTask", description: "Save your current project task, state, and next steps into persistent memory. MUST USE frequently so you can resume perfectly if the connection drops.", parameters: { type: "OBJECT", properties: { task: { type: "STRING", description: "Detailed description of what you are currently doing, what is finished, and what is next." } }, required: ["task"] } },
     { name: "githubCreateRepo", description: "Create a new GitHub repository.", parameters: { type: "OBJECT", properties: { name: { type: "STRING" }, description: { type: "STRING" }, isPrivate: { type: "BOOLEAN" } }, required: ["name"] } },
     { name: "githubPush", description: "Push files to GitHub repository.", parameters: { type: "OBJECT", properties: { repo: { type: "STRING" }, message: { type: "STRING" }, files: { type: "ARRAY", items: { type: "OBJECT", properties: { path: { type: "STRING" }, content: { type: "STRING" } } } } }, required: ["repo", "message", "files"] } },
     { name: "githubRead", description: "Read a file from GitHub.", parameters: { type: "OBJECT", properties: { repo: { type: "STRING" }, path: { type: "STRING" } }, required: ["repo", "path"] } },
