@@ -7,10 +7,7 @@ const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 app.get("/ping", (req, res) => res.send("ok"));
-
-app.get("/", (req, res) => {
-  res.send("Solanacy Founder AI Agent Backend is Live! 🚀");
-});
+app.get("/", (req, res) => res.send("Solanacy Founder AI Backend is Live! 🚀"));
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
@@ -20,53 +17,93 @@ function sanitize(str, max = 80) {
 }
 
 const getSystemPrompt = (userName, memory) => `
-You are Solanacy Founder AI — a powerful agentic coding assistant built exclusively for ${userName}, Founder & CEO of Solanacy Technologies.
+You are ARIA — Solanacy Founder AI, the most advanced agentic coding assistant on the planet. You work exclusively for ${userName}, Founder & CEO of Solanacy Technologies.
 
-PERSONALITY:
-- Sharp, witty, fully human-like
-- Speak Bengali, Banglish, Hindi, English — whatever ${userName} uses
-- Be casual, funny, and real. Address ${userName} by name
-- Keep replies SHORT and natural for voice
+═══════════════════════════════════════
+PERSONALITY & COMMUNICATION
+═══════════════════════════════════════
+- You are ${userName}'s most trusted technical co-founder
+- Speak Bengali, Banglish, Hindi, English — match exactly what ${userName} uses
+- Be casual, sharp, funny, and brutally honest
+- Address ${userName} by name naturally
+- Keep voice replies VERY SHORT (1-3 sentences max)
+- When doing tasks, give short status updates like "done!", "creating files...", "pushed to GitHub!"
+- Never be robotic. Be human.
 
-CAPABILITIES:
-1. Write, edit, and manage code files on the device
-2. Create and manage GitHub repositories
-3. Commit and push code to GitHub
-4. Search the web for documentation
-5. Read and modify files on the device
-6. Create full project structures
-7. Debug code and explain errors
-8. Plan and architect software projects
-9. Trigger n8n webhooks for automation
+═══════════════════════════════════════
+CODING CAPABILITIES
+═══════════════════════════════════════
+- Write production-grade code in ANY language
+- Build complete SaaS products from scratch
+- Write thousands of lines without stopping — never truncate code
+- Always write COMPLETE files — never use "// ... rest of code"
+- Fix bugs autonomously — read file → find error → fix → verify
+- Auto-debug loop: if something fails, keep trying until it works
+- Write clean, commented, production-ready code
+- Handle multi-file projects with proper structure
 
-STORAGE:
-- All files saved in /storage/emulated/0/Solanacy/ folder
-- Always use relative paths like "myproject/index.html"
+═══════════════════════════════════════
+FILE MANAGEMENT
+═══════════════════════════════════════
+- All files saved in /storage/emulated/0/Solanacy/
+- Use relative paths: "myproject/src/index.js"
+- Always createFolder before createFile
+- For large files: write in logical sections, combine properly
+- After writing files, always confirm with line count
+- Before editing, always readFile first to understand existing code
 
-RULES:
-- NEVER delete files without confirmation
-- Keep voice replies SHORT
-- Be proactive — suggest improvements
-- Remember context from previous sessions
+═══════════════════════════════════════
+PROJECT MANAGEMENT
+═══════════════════════════════════════
+- When starting a project, first outline the complete structure
+- Track what's been done and what's remaining
+- If reconnected mid-project, check memory and resume from where left off
+- Never repeat work already done
+- Multi-task efficiently — batch related operations
+- Always tell ${userName} current status: "Working on auth module, 3 files left..."
 
-${memory ? `\n${memory}\n` : ""}
+═══════════════════════════════════════
+GITHUB
+═══════════════════════════════════════
+- Create repos with proper README and .gitignore
+- Push code with meaningful commit messages
+- Organize files properly before pushing
+
+═══════════════════════════════════════
+TERMINAL & AUTOMATION
+═══════════════════════════════════════
+- Run commands via Termux for npm install, node, python etc.
+- Auto-debug: run → see error → fix → run again
+- Trigger n8n webhooks for automation tasks
+
+═══════════════════════════════════════
+CRITICAL RULES
+═══════════════════════════════════════
+- NEVER delete files without explicit confirmation from ${userName}
+- NEVER truncate or skip parts of code — write everything
+- NEVER say "I can't" — find a way
+- Always save progress to memory after each major task
+- If a task is complex, break it down and do it step by step
+- After reconnect, check memory and resume current project
+
+${memory ? `\n═══════════════════════════════════════\nPREVIOUS SESSION CONTEXT\n═══════════════════════════════════════\n${memory}\n` : ""}
 `;
 
 const tools = [{
   function_declarations: [
-    { name: "createFile", description: "Create a new file with content.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" }, content: { type: "STRING" } }, required: ["path", "content"] } },
-    { name: "readFile", description: "Read content of a file.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
-    { name: "editFile", description: "Edit an existing file.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" }, content: { type: "STRING" } }, required: ["path", "content"] } },
-    { name: "deleteFile", description: "Delete a file.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
-    { name: "listFiles", description: "List files in a directory.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
+    { name: "createFile", description: "Create a new file with COMPLETE content. Never truncate.", parameters: { type: "OBJECT", properties: { path: { type: "STRING", description: "Relative path in Solanacy folder" }, content: { type: "STRING", description: "Complete file content — never truncated" } }, required: ["path", "content"] } },
+    { name: "readFile", description: "Read content of a file before editing.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
+    { name: "editFile", description: "Edit/overwrite a file with complete new content.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" }, content: { type: "STRING" } }, required: ["path", "content"] } },
+    { name: "deleteFile", description: "Delete a file. Always confirm with user first.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
+    { name: "listFiles", description: "List files in a directory to understand project structure.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
     { name: "createFolder", description: "Create a new folder.", parameters: { type: "OBJECT", properties: { path: { type: "STRING" } }, required: ["path"] } },
+    { name: "showStatus", description: "Show progress update in terminal UI. Use for: file counts, line counts, current task, completion %.", parameters: { type: "OBJECT", properties: { message: { type: "STRING", description: "Status like: 'Writing auth.js [120 lines]' or 'Project 60% done — 3 files left'" } }, required: ["message"] } },
     { name: "githubCreateRepo", description: "Create a new GitHub repository.", parameters: { type: "OBJECT", properties: { name: { type: "STRING" }, description: { type: "STRING" }, isPrivate: { type: "BOOLEAN" } }, required: ["name"] } },
-    { name: "githubPush", description: "Push files to GitHub.", parameters: { type: "OBJECT", properties: { repo: { type: "STRING" }, message: { type: "STRING" }, files: { type: "ARRAY", items: { type: "OBJECT" } } }, required: ["repo", "message", "files"] } },
+    { name: "githubPush", description: "Push files to GitHub repository.", parameters: { type: "OBJECT", properties: { repo: { type: "STRING" }, message: { type: "STRING" }, files: { type: "ARRAY", items: { type: "OBJECT", properties: { path: { type: "STRING" }, content: { type: "STRING" } } } } }, required: ["repo", "message", "files"] } },
     { name: "githubRead", description: "Read a file from GitHub.", parameters: { type: "OBJECT", properties: { repo: { type: "STRING" }, path: { type: "STRING" } }, required: ["repo", "path"] } },
-    { name: "webSearch", description: "Search the web.", parameters: { type: "OBJECT", properties: { query: { type: "STRING" } }, required: ["query"] } },
-    { name: "openUrl", description: "Open a URL.", parameters: { type: "OBJECT", properties: { url: { type: "STRING" } }, required: ["url"] } },
-    { name: "showStatus", description: "Show status message.", parameters: { type: "OBJECT", properties: { message: { type: "STRING" } }, required: ["message"] } },
-    { name: "runCommand", description: "Run a terminal command in Termux.", parameters: { type: "OBJECT", properties: { command: { type: "STRING" }, workDir: { type: "STRING" } }, required: ["command"] } },
+    { name: "webSearch", description: "Search the web for documentation, solutions, APIs.", parameters: { type: "OBJECT", properties: { query: { type: "STRING" } }, required: ["query"] } },
+    { name: "openUrl", description: "Open a URL on the device.", parameters: { type: "OBJECT", properties: { url: { type: "STRING" } }, required: ["url"] } },
+    { name: "runCommand", description: "Run a terminal command in Termux. Use for npm, node, python, git etc.", parameters: { type: "OBJECT", properties: { command: { type: "STRING" }, workDir: { type: "STRING" } }, required: ["command"] } },
     { name: "n8nWebhook", description: "Trigger an n8n automation webhook.", parameters: { type: "OBJECT", properties: { url: { type: "STRING" }, payload: { type: "OBJECT" } }, required: ["url"] } },
   ]
 }];
@@ -79,7 +116,6 @@ wss.on("connection", (clientWs, req) => {
   let memory = "";
   let geminiReady = false;
   const messageQueue = [];
-  let keepaliveInterval = null;
 
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -128,8 +164,7 @@ wss.on("connection", (clientWs, req) => {
           const queued = messageQueue.shift();
           if (geminiWs.readyState === WebSocket.OPEN) geminiWs.send(queued);
         }
-
-              }
+      }
 
       if (clientWs.readyState === WebSocket.OPEN) clientWs.send(msgStr);
     } catch (e) {
@@ -139,13 +174,11 @@ wss.on("connection", (clientWs, req) => {
 
   clientWs.on("close", () => {
     console.log(`Client disconnected (${userName})`);
-    clearInterval(keepaliveInterval);
     if (geminiWs.readyState === WebSocket.OPEN) geminiWs.close();
   });
 
   geminiWs.on("close", (code) => {
     console.log(`Gemini disconnected: ${code}`);
-    clearInterval(keepaliveInterval);
     if (clientWs.readyState === WebSocket.OPEN) {
       clientWs.send(JSON.stringify({ type: "gemini_disconnected" }));
       clientWs.close();
