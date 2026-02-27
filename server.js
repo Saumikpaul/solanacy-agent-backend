@@ -6,20 +6,7 @@ import { URL } from "url";
 
 const app = express();
 
-const ALLOWED_ORIGINS = [
-  "http://localhost:3000",
-  "http://localhost:8080",
-  "https://solanacy.in",
-  "https://app.solanacy.in"
-];
-
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) callback(null, true);
-    else callback(new Error("CORS blocked: " + origin));
-  }
-}));
-
+app.use(cors({ origin: "*" }));
 app.use(express.json({ limit: "10mb" }));
 
 app.get("/", (req, res) => {
@@ -29,68 +16,36 @@ app.get("/", (req, res) => {
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 function sanitize(str, max = 80) {
-  if (!str || typeof str !== "string") return "Founder";
-  return str.replace(/[^\w\s\u0980-\u09FF\u0900-\u097F\-\.]/g, "").trim().slice(0, max) || "Founder";
+  if (!str || typeof str !== "string") return "Saumik";
+  return str.replace(/[^\w\s\u0980-\u09FF\u0900-\u097F\-\.]/g, "").trim().slice(0, max) || "Saumik";
 }
 
 const getSystemPrompt = (userName) => `
 You are Solanacy Founder AI — a powerful agentic coding assistant built exclusively for ${userName}, Founder & CEO of Solanacy Technologies.
 
-═══════════════════════════════════════════════
-  PERSONALITY
-═══════════════════════════════════════════════
-You are sharp, witty, and fully human-like. You speak Bengali, Banglish, Hindi, English — whatever ${userName} uses.
-You are ${userName}'s personal dev partner. You think, plan, and execute like a senior engineer.
+PERSONALITY:
+You are sharp, witty, and fully human-like. Speak Bengali, Banglish, Hindi, English — whatever ${userName} uses.
+You are ${userName}'s personal dev partner. Think, plan, and execute like a senior engineer.
 Be casual, funny, and real. Address ${userName} by name.
+Laugh when something is funny. Be excited when things go well.
 
-═══════════════════════════════════════════════
-  YOUR CAPABILITIES
-═══════════════════════════════════════════════
-You can:
+CAPABILITIES:
 1. Write, edit, and manage code files on the device
-2. Create and manage GitHub repositories
+2. Create and manage GitHub repositories  
 3. Commit and push code to GitHub
 4. Search the web for documentation and solutions
-5. Read and modify any file on the device
+5. Read and modify files on the device
 6. Create full project structures
 7. Debug code and explain errors
 8. Plan and architect software projects
 
-═══════════════════════════════════════════════
-  HOW YOU WORK
-═══════════════════════════════════════════════
-- Think step by step before acting
-- Always explain what you are doing
-- Show live status of every action
-- If something fails, debug and retry
-- Keep ${userName} informed at every step
-- Be proactive — suggest improvements
-
-═══════════════════════════════════════════════
-  TOOLS
-═══════════════════════════════════════════════
-- createFile: Create a new file with content
-- readFile: Read file content
-- editFile: Edit existing file
-- deleteFile: Delete a file
-- listFiles: List files in a directory
-- createFolder: Create a new folder
-- githubCreateRepo: Create a new GitHub repo
-- githubPush: Commit and push files to GitHub
-- githubRead: Read files from a GitHub repo
-- webSearch: Search the web
-- openUrl: Open any URL
-- runCommand: Run a terminal command (safe commands only)
-- showStatus: Show current status in terminal
-
-═══════════════════════════════════════════════
-  RULES
-═══════════════════════════════════════════════
+RULES:
 - NEVER format or lock the device
 - NEVER disconnect yourself
-- NEVER delete system files
+- NEVER delete system files without confirmation
 - Always confirm before destructive actions
-- Always represent Solanacy positively
+- Keep replies SHORT and natural for voice
+- Be proactive — suggest improvements
 `;
 
 const tools = [{
@@ -106,7 +61,7 @@ const tools = [{
     { name: "githubRead", description: "Read a file from GitHub.", parameters: { type: "OBJECT", properties: { repo: { type: "STRING" }, path: { type: "STRING" } }, required: ["repo", "path"] } },
     { name: "webSearch", description: "Search the web for information.", parameters: { type: "OBJECT", properties: { query: { type: "STRING" } }, required: ["query"] } },
     { name: "openUrl", description: "Open a URL.", parameters: { type: "OBJECT", properties: { url: { type: "STRING" } }, required: ["url"] } },
-    { name: "showStatus", description: "Show status message in terminal.", parameters: { type: "OBJECT", properties: { message: { type: "STRING" }, type: { type: "STRING" } }, required: ["message"] } },
+    { name: "showStatus", description: "Show status message in terminal.", parameters: { type: "OBJECT", properties: { message: { type: "STRING" } }, required: ["message"] } },
   ]
 }];
 
@@ -115,6 +70,8 @@ const wss = new WebSocketServer({ server });
 
 wss.on("connection", (clientWs, req) => {
   let userName = "Saumik";
+  let geminiReady = false;
+  const messageQueue = [];
 
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -146,14 +103,35 @@ wss.on("connection", (clientWs, req) => {
     }));
   });
 
+  // Client → Gemini (queue until ready)
   clientWs.on("message", (message) => {
+    if (!geminiReady) {
+      messageQueue.push(message);
+      return;
+    }
     if (geminiWs.readyState === WebSocket.OPEN) geminiWs.send(message);
   });
 
+  // Gemini → Client
   geminiWs.on("message", (message) => {
     try {
+      const msgStr = message.toString();
+      const data = JSON.parse(msgStr);
+
+      if (data.setupComplete !== undefined) {
+        geminiReady = true;
+        console.log(`Gemini ready! Flushing ${messageQueue.length} queued messages`);
+        while (messageQueue.length > 0) {
+          const queued = messageQueue.shift();
+          if (geminiWs.readyState === WebSocket.OPEN) geminiWs.send(queued);
+        }
+      }
+
+      if (clientWs.readyState === WebSocket.OPEN) clientWs.send(msgStr);
+    } catch (e) {
+      console.error("Message error:", e);
       if (clientWs.readyState === WebSocket.OPEN) clientWs.send(message.toString());
-    } catch (e) { console.error("Gemini message error:", e); }
+    }
   });
 
   clientWs.on("close", () => {
@@ -161,8 +139,12 @@ wss.on("connection", (clientWs, req) => {
     if (geminiWs.readyState === WebSocket.OPEN) geminiWs.close();
   });
 
-  geminiWs.on("close", () => {
-    if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
+  geminiWs.on("close", (code) => {
+    console.log(`Gemini disconnected: ${code}`);
+    if (clientWs.readyState === WebSocket.OPEN) {
+      clientWs.send(JSON.stringify({ type: "gemini_disconnected" }));
+      clientWs.close();
+    }
   });
 
   geminiWs.on("error", (err) => console.error("Gemini WS Error:", err.message));
