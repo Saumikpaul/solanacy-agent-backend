@@ -64,6 +64,7 @@ const tools = [{
     { name: "webSearch", description: "Search the web.", parameters: { type: "OBJECT", properties: { query: { type: "STRING" } }, required: ["query"] } },
     { name: "openUrl", description: "Open a URL.", parameters: { type: "OBJECT", properties: { url: { type: "STRING" } }, required: ["url"] } },
     { name: "showStatus", description: "Show status message.", parameters: { type: "OBJECT", properties: { message: { type: "STRING" } }, required: ["message"] } },
+    { name: "runCommand", description: "Run a terminal command in Termux.", parameters: { type: "OBJECT", properties: { command: { type: "STRING" }, workDir: { type: "STRING" } }, required: ["command"] } },
     { name: "n8nWebhook", description: "Trigger an n8n automation webhook.", parameters: { type: "OBJECT", properties: { url: { type: "STRING" }, payload: { type: "OBJECT" } }, required: ["url"] } },
   ]
 }];
