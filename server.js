@@ -1,11 +1,10 @@
 /**
- * ARIA v3.0 — Gemini Live Proxy Server
- * Uses correct @google/genai SDK async iterator pattern
+ * ARIA v3.0 — Gemini Live Direct WebSocket Proxy
+ * Bypasses SDK issues by connecting directly to Gemini WS API
  */
 
 import { createServer } from 'http';
-import { WebSocketServer } from 'ws';
-import { GoogleGenAI } from '@google/genai';
+import { WebSocketServer, WebSocket } from 'ws';
 import { ARIA_SYSTEM_PROMPT, TOOL_DECLARATIONS } from './server_system_prompt.js';
 
 const PORT       = process.env.PORT || 3000;
@@ -16,7 +15,7 @@ if (!GEMINI_KEY) {
   process.exit(1);
 }
 
-const ai = new GoogleGenAI({ apiKey: GEMINI_KEY });
+const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_KEY}`;
 
 const httpServer = createServer((_req, res) => {
   res.writeHead(200);
@@ -25,33 +24,36 @@ const httpServer = createServer((_req, res) => {
 
 const wss = new WebSocketServer({ server: httpServer });
 
-wss.on('connection', async (clientWs, request) => {
+wss.on('connection', (clientWs, request) => {
   const urlObj = new URL(request.url, 'http://localhost');
   const user   = urlObj.searchParams.get('name')   || 'User';
   const memory = urlObj.searchParams.get('memory') || '';
 
   console.log(`🟢 Client connected — user: ${user}`);
 
-  let session = null;
-  let closed  = false;
+  // Connect to Gemini directly
+  const geminiWs = new WebSocket(GEMINI_WS_URL);
+  let geminiReady = false;
+  let setupSent   = false;
 
   function sendClient(payload) {
-    if (clientWs.readyState === 1) {
-      clientWs.send(JSON.stringify(payload));
+    if (clientWs.readyState === WebSocket.OPEN) {
+      clientWs.send(typeof payload === 'string' ? payload : JSON.stringify(payload));
     }
   }
 
-  // ── Open Gemini Live Session ────────────────────────────
-  try {
+  // ── Gemini events ────────────────────────────────────────
+  geminiWs.on('open', () => {
+    console.log('✅ Gemini WS open — sending setup');
+
     const systemInstruction = ARIA_SYSTEM_PROMPT
       .replace('{userName}', user)
       .replace('{memoryContext}', memory);
 
-    session = await ai.live.connect({
-      model: 'gemini-2.0-flash-live-001',
-      config: {
-        systemInstruction,
-        tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+    // Send setup message to Gemini
+    geminiWs.send(JSON.stringify({
+      setup: {
+        model: 'models/gemini-2.0-flash-live-001',
         generationConfig: {
           responseModalities: ['AUDIO'],
           speechConfig: {
@@ -60,54 +62,63 @@ wss.on('connection', async (clientWs, request) => {
             },
           },
         },
+        systemInstruction: {
+          parts: [{ text: systemInstruction }],
+        },
+        tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
       },
-    });
+    }));
+  });
 
-    console.log('✅ Gemini session open');
-    sendClient({ setupComplete: true });
-
-  } catch (err) {
-    console.error('❌ Gemini connect failed:', err.message);
-    sendClient({ error: 'Gemini connect failed: ' + err.message });
-    clientWs.close();
-    return;
-  }
-
-  // ── Receive from Gemini → forward to client ─────────────
-  (async () => {
+  geminiWs.on('message', (data) => {
     try {
-      for await (const msg of session) {
-        if (closed) break;
-        if (clientWs.readyState === 1) {
-          clientWs.send(JSON.stringify(msg));
-        }
+      const msg = JSON.parse(data.toString());
+
+      // Gemini sends setupComplete after setup
+      if (msg.setupComplete !== undefined) {
+        geminiReady = true;
+        console.log('✅ Gemini setup complete');
+        // Forward setupComplete to frontend — this is what voice.js waits for!
+        sendClient({ setupComplete: true });
+        return;
       }
-    } catch (err) {
-      if (!closed) console.error('❌ Gemini receive error:', err.message);
-    }
-    console.log('🔴 Gemini stream ended');
-  })();
 
-  // ── Receive from client → forward to Gemini ─────────────
-  clientWs.on('message', async (raw) => {
-    if (!session || closed) return;
-    try {
-      const msg = JSON.parse(raw);
-      await session.send(msg);
-    } catch (err) {
-      console.error('❌ Send to Gemini error:', err.message);
+      // Forward all other messages (audio, text, toolCall) directly to client
+      sendClient(msg);
+
+    } catch (e) {
+      // Binary data (raw audio) — forward as-is
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(data);
+      }
     }
+  });
+
+  geminiWs.on('error', (err) => {
+    console.error('❌ Gemini WS error:', err.message);
+    sendClient({ error: 'Gemini error: ' + err.message });
+  });
+
+  geminiWs.on('close', (code, reason) => {
+    console.log(`🔴 Gemini WS closed: ${code} ${reason}`);
+    if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
+  });
+
+  // ── Client → Gemini ──────────────────────────────────────
+  clientWs.on('message', (raw) => {
+    if (geminiWs.readyState !== WebSocket.OPEN) return;
+    // Forward everything from client to Gemini as-is
+    geminiWs.send(raw);
   });
 
   // ── Client disconnect ────────────────────────────────────
-  clientWs.on('close', async () => {
-    closed = true;
+  clientWs.on('close', () => {
     console.log('🔴 Client disconnected');
-    try { await session?.close(); } catch (_) {}
+    if (geminiWs.readyState === WebSocket.OPEN) geminiWs.close();
   });
 
   clientWs.on('error', (err) => {
-    console.error('WS error:', err.message);
+    console.error('Client WS error:', err.message);
   });
 });
 
