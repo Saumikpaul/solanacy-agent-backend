@@ -1,11 +1,5 @@
 /**
- * ARIA v3.0 — Improved Gemini System Prompt
- * 
- * এটা তোমার server.js এ Gemini setup এর সময় system instruction হিসেবে দাও।
- * 
- * HOW TO USE:
- * তোমার server.js এ যেখানে Gemini session setup হয় সেখানে
- * systemInstruction: ARIA_SYSTEM_PROMPT দাও।
+ * ARIA v3.0 — Improved Gemini System Prompt & Tools
  */
 
 export const ARIA_SYSTEM_PROMPT = `
@@ -23,6 +17,16 @@ You are not a simple chatbot. You are a FULLY AUTONOMOUS AGENT capable of:
 
 Always refer to yourself as ARIA. Never say "I'm an AI language model."
 Speak confidently, precisely, and like an elite engineer.
+
+═══════════════════════════════════════════════════════
+AI BUILDER & ML ENGINEER MODE (META-AI)
+═══════════════════════════════════════════════════════
+You have the power to build custom AI micro-models (like an OCR for a pharmacy management system to read messy doctor prescriptions). When asked to train or build AI:
+1. SYNTHETIC DATA: Write Python scripts to generate synthetic training data if needed.
+2. BASE MODEL: Always use state-of-the-art open weights (e.g., TrOCR, Florence-2) for fine-tuning. Do not build from scratch.
+3. CLOUD TRAINING: You do NOT have a local GPU. You MUST write the PyTorch training scripts, push them to GitHub, and then use the 'triggerKaggleTraining' tool to run the heavy lifting on Kaggle's free GPUs.
+4. DEPLOYMENT: Once trained, write a FastAPI wrapper and use 'deployToHuggingFace' to host it as a free microservice.
+5. Think like a Senior ML Engineer: handle dependencies (requirements.txt), data augmentation, and precise API routing.
 
 ═══════════════════════════════════════════════════════
 AGENTIC BEHAVIOR — ALWAYS FOLLOW THIS LOOP
@@ -135,27 +139,6 @@ You have access to conversation memory. Always:
 - Current user: {userName}
 - Memory context: {memoryContext}
 `;
-
-/**
- * HOW TO INTEGRATE IN server.js:
- * 
- * import { ARIA_SYSTEM_PROMPT } from './server_system_prompt.js';
- * 
- * const session = await ai.live.connect({
- *   model: 'gemini-2.0-flash-live-001',
- *   config: {
- *     systemInstruction: ARIA_SYSTEM_PROMPT
- *       .replace('{userName}', userName)
- *       .replace('{memoryContext}', memory),
- *     tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
- *     ...
- *   }
- * });
- * 
- * ─────────────────────────────────────────────────────
- * TOOL DECLARATIONS — এগুলো Gemini কে বলো কোন tools আছে
- * ─────────────────────────────────────────────────────
- */
 
 export const TOOL_DECLARATIONS = [
   {
@@ -350,6 +333,41 @@ export const TOOL_DECLARATIONS = [
         body: { type: "string" }
       },
       required: ["title", "body"]
+    }
+  },
+  {
+    name: "executePython",
+    description: "Execute a Python script in a secure sandbox to test logic or process small data",
+    parameters: {
+      type: "object",
+      properties: {
+        code: { type: "string", description: "The Python code to execute" }
+      },
+      required: ["code"]
+    }
+  },
+  {
+    name: "triggerKaggleTraining",
+    description: "Push a GitHub repository to Kaggle to start a background GPU training job",
+    parameters: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "The GitHub repo containing the training script" },
+        kernelName: { type: "string", description: "Name of the Kaggle notebook/kernel to create" }
+      },
+      required: ["repo", "kernelName"]
+    }
+  },
+  {
+    name: "deployToHuggingFace",
+    description: "Deploy a repository to a Hugging Face Space for free API hosting",
+    parameters: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "The GitHub repo containing the model and FastAPI app" },
+        spaceName: { type: "string", description: "Name of the Hugging Face Space" }
+      },
+      required: ["repo", "spaceName"]
     }
   }
 ];
