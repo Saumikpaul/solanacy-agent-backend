@@ -31,10 +31,7 @@ wss.on('connection', (clientWs, request) => {
 
   console.log(`🟢 Client connected — user: ${user}`);
 
-  // Connect to Gemini directly
   const geminiWs = new WebSocket(GEMINI_WS_URL);
-  let geminiReady = false;
-  let setupSent   = false;
 
   function sendClient(payload) {
     if (clientWs.readyState === WebSocket.OPEN) {
@@ -50,7 +47,6 @@ wss.on('connection', (clientWs, request) => {
       .replace('{userName}', user)
       .replace('{memoryContext}', memory);
 
-    // Send setup message to Gemini
     geminiWs.send(JSON.stringify({
       setup: {
         model: 'models/gemini-2.5-flash-native-audio-preview-12-2025',
@@ -70,27 +66,31 @@ wss.on('connection', (clientWs, request) => {
     }));
   });
 
-  geminiWs.on('message', (data) => {
+  geminiWs.on('message', (data, isBinary) => {
+    // ✅ FIX: isBinary flag দিয়ে আগেই check করো — parse করার চেষ্টাই করো না
+    if (isBinary) {
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(data, { binary: true });
+      }
+      return;
+    }
+
+    // Text frame — এখন safely parse করো
     try {
       const msg = JSON.parse(data.toString());
 
-      // Gemini sends setupComplete after setup
       if (msg.setupComplete !== undefined) {
-        geminiReady = true;
         console.log('✅ Gemini setup complete');
-        // Forward setupComplete to frontend — this is what voice.js waits for!
         sendClient({ setupComplete: true });
         return;
       }
 
-      // Forward all other messages (audio, text, toolCall) directly to client
+      // বাকি সব (audio, text, toolCall) client এ forward করো
       sendClient(msg);
 
     } catch (e) {
-      // Binary data (raw audio) — forward as-is
-      if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.send(data);
-      }
+      // এখানে আসা মানে text frame কিন্তু valid JSON না — এটা unexpected, log করো
+      console.error('⚠️ Gemini non-JSON text frame:', data.toString().slice(0, 100), e.message);
     }
   });
 
@@ -105,10 +105,9 @@ wss.on('connection', (clientWs, request) => {
   });
 
   // ── Client → Gemini ──────────────────────────────────────
-  clientWs.on('message', (raw) => {
+  clientWs.on('message', (raw, isBinary) => {
     if (geminiWs.readyState !== WebSocket.OPEN) return;
-    // Forward everything from client to Gemini as-is
-    geminiWs.send(raw);
+    geminiWs.send(raw, { binary: isBinary });
   });
 
   // ── Client disconnect ────────────────────────────────────
