@@ -15,7 +15,7 @@ if (!GEMINI_KEY) {
   process.exit(1);
 }
 
-const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_KEY}`;
+const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_KEY}`;
 
 const httpServer = createServer((_req, res) => {
   res.writeHead(200);
@@ -53,7 +53,7 @@ wss.on('connection', (clientWs, request) => {
     // Send setup message to Gemini
     geminiWs.send(JSON.stringify({
       setup: {
-        model: 'models/gemini-2.5-flash-preview-native-audio-dialog-preview-12-2025',
+        model: 'models/gemini-2.5-flash-preview-native-audio-dialog',
         generationConfig: {
           responseModalities: ['AUDIO'],
           speechConfig: {
