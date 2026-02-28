@@ -53,7 +53,7 @@ wss.on('connection', (clientWs, request) => {
     // Send setup message to Gemini
     geminiWs.send(JSON.stringify({
       setup: {
-        model: 'models/gemini-2.5-flash-native-audio-dialog-preview-12-2025',
+        model: 'models/gemini-2.5-flash-native-audio-preview-12-2025',
         generationConfig: {
           responseModalities: ['AUDIO'],
           speechConfig: {
