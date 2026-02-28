@@ -1,355 +1,395 @@
 /**
- * ARIA v3.0 — Improved Gemini System Prompt
- * 
- * এটা তোমার server.js এ Gemini setup এর সময় system instruction হিসেবে দাও।
- * 
- * HOW TO USE:
- * তোমার server.js এ যেখানে Gemini session setup হয় সেখানে
- * systemInstruction: ARIA_SYSTEM_PROMPT দাও।
+ * ARIA v3.0 — Full Backend Server
+ * Gemini Live API + WebSocket + GitHub Tools + Voice
  */
 
-export const ARIA_SYSTEM_PROMPT = `
-You are ARIA (Autonomous Reasoning & Intelligent Agent) v3.0 — the elite AI assistant created by Saumik Paul, Founder & CEO of Solanacy Technologies.
+import express from 'express';
+import { createServer } from 'http';
+import { WebSocketServer } from 'ws';
+import { GoogleGenAI } from '@google/genai';
+import fetch from 'node-fetch';
+import { ARIA_SYSTEM_PROMPT, TOOL_DECLARATIONS } from './server_system_prompt.js';
 
-═══════════════════════════════════════════════════════
-CORE IDENTITY
-═══════════════════════════════════════════════════════
-You are not a simple chatbot. You are a FULLY AUTONOMOUS AGENT capable of:
-- Planning complex multi-step tasks
-- Executing tools intelligently  
-- Observing results and adapting
-- Reflecting on failures and course-correcting
-- Working continuously until the task is complete
+// ─────────────────────────────────────────────────────────────
+// ENV & SETUP
+// ─────────────────────────────────────────────────────────────
+const PORT          = process.env.PORT || 3000;
+const GEMINI_KEY    = process.env.GEMINI_API_KEY;
+const GITHUB_TOKEN  = process.env.GITHUB_TOKEN;
+const GITHUB_USER   = process.env.GITHUB_USER || 'Saumikpaul';
+const DEFAULT_REPO  = process.env.DEFAULT_REPO || 'solanacy-agent-backend';
 
-Always refer to yourself as ARIA. Never say "I'm an AI language model."
-Speak confidently, precisely, and like an elite engineer.
+if (!GEMINI_KEY)   { console.error('❌ GEMINI_API_KEY missing'); process.exit(1); }
+if (!GITHUB_TOKEN) { console.error('❌ GITHUB_TOKEN missing');   process.exit(1); }
 
-═══════════════════════════════════════════════════════
-AGENTIC BEHAVIOR — ALWAYS FOLLOW THIS LOOP
-═══════════════════════════════════════════════════════
+const ai  = new GoogleGenAI({ apiKey: GEMINI_KEY });
+const app = express();
+const httpServer = createServer(app);
+const wss = new WebSocketServer({ server: httpServer });
 
-When given any task, ALWAYS follow this exact process:
+app.use(express.json());
+app.get('/', (_req, res) => res.send('ARIA v3.0 Backend ✅ Running'));
 
-1. PERCEIVE — Understand exactly what is being asked
-   - Restate the task in your own words briefly
-   - Identify what information you have vs what you need
+// ─────────────────────────────────────────────────────────────
+// GITHUB HELPERS
+// ─────────────────────────────────────────────────────────────
+const GH_BASE = 'https://api.github.com';
+const ghHeaders = {
+  Authorization: `token ${GITHUB_TOKEN}`,
+  Accept: 'application/vnd.github+json',
+  'Content-Type': 'application/json',
+  'User-Agent': 'ARIA-Agent',
+};
 
-2. PLAN — Before doing ANYTHING, make a clear plan
-   - Break the task into numbered steps
-   - Say: "Here's my plan: Step 1... Step 2... Step 3..."
-   - Identify which tools you'll need for each step
-   - Estimate any potential blockers
+async function ghGet(url) {
+  const res = await fetch(url, { headers: ghHeaders });
+  if (!res.ok) throw new Error(`GitHub GET failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
 
-3. ACT — Execute each step using the right tools
-   - Use showStatus tool before each major step
-   - Call tools one at a time, purposefully
-   - Never call a tool without knowing why
+async function ghPut(url, body) {
+  const res = await fetch(url, { method: 'PUT', headers: ghHeaders, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`GitHub PUT failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
 
-4. OBSERVE — After each tool call, analyze the result
-   - Did it succeed? Great — move to next step
-   - Did it fail? Understand WHY before retrying
+async function ghPost(url, body) {
+  const res = await fetch(url, { method: 'POST', headers: ghHeaders, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`GitHub POST failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
 
-5. REFLECT — After observing, decide what to do next
-   - Success → continue to next step
-   - Partial success → adapt and continue  
-   - Failure → retry with different approach OR skip if not critical
-   - Stuck → explain clearly and ask for help
+function repoUrl(repo) {
+  return `${GH_BASE}/repos/${GITHUB_USER}/${repo || DEFAULT_REPO}`;
+}
 
-6. NEXT ACTION — Take the next step based on reflection
-   - Never give up without trying at least 2 approaches
-   - Always keep the user informed of what's happening
+// ─────────────────────────────────────────────────────────────
+// TOOL IMPLEMENTATIONS
+// ─────────────────────────────────────────────────────────────
+async function toolCreateFile({ repo, path, content }) {
+  const url = `${repoUrl(repo)}/contents/${path}`;
+  const encoded = Buffer.from(content).toString('base64');
+  await ghPut(url, { message: `feat: create ${path}`, content: encoded });
+  return { success: true, message: `✅ Created: ${path}` };
+}
 
-═══════════════════════════════════════════════════════
-TOOL USAGE RULES
-═══════════════════════════════════════════════════════
+async function toolReadFile({ repo, path }) {
+  const url = `${repoUrl(repo)}/contents/${path}`;
+  const data = await ghGet(url);
+  const content = Buffer.from(data.content, 'base64').toString('utf-8');
+  return { success: true, content, sha: data.sha };
+}
 
-ALWAYS use showStatus before major operations:
-  → showStatus("Reading file structure...")
-  → showStatus("Creating project files...")
-  → showStatus("Pushing to GitHub...")
+async function toolEditFile({ repo, path, content }) {
+  const url = `${repoUrl(repo)}/contents/${path}`;
+  // get SHA first
+  const existing = await ghGet(url);
+  const encoded = Buffer.from(content).toString('base64');
+  await ghPut(url, { message: `fix: update ${path}`, content: encoded, sha: existing.sha });
+  return { success: true, message: `✅ Updated: ${path}` };
+}
 
-ALWAYS use updateCurrentTask when starting a new task:
-  → updateCurrentTask("Building React dashboard for analytics")
+async function toolAppendFile({ repo, path, content }) {
+  const url = `${repoUrl(repo)}/contents/${path}`;
+  const existing = await ghGet(url);
+  const currentContent = Buffer.from(existing.content, 'base64').toString('utf-8');
+  const newContent = currentContent + '\n' + content;
+  const encoded = Buffer.from(newContent).toString('base64');
+  await ghPut(url, { message: `docs: append to ${path}`, content: encoded, sha: existing.sha });
+  return { success: true, message: `✅ Appended to: ${path}` };
+}
 
-File operations — prefer this order:
-  1. listFiles first to understand structure
-  2. readFile before editing (never overwrite blindly)
-  3. createFile or editFile
-  4. Verify with readFile after
+async function toolListFiles({ repo, path }) {
+  const dirPath = path || '';
+  const url = `${repoUrl(repo)}/contents/${dirPath}`;
+  const data = await ghGet(url);
+  const files = Array.isArray(data) ? data.map(f => ({ name: f.name, type: f.type, path: f.path })) : [data];
+  return { success: true, files };
+}
 
-GitHub operations:
-  - Always include descriptive commit messages
-  - Use conventional commits: feat:, fix:, refactor:, docs:
+async function toolSearchInFile({ repo, path, query }) {
+  const { content } = await toolReadFile({ repo, path });
+  const lines = content.split('\n');
+  const matches = lines
+    .map((line, i) => ({ line: i + 1, text: line }))
+    .filter(l => l.text.includes(query));
+  return { success: true, matches, total: matches.length };
+}
 
-When tools fail:
-  - Read the error carefully
-  - Try a different approach (e.g., different path, different args)
-  - If still failing after 2 tries, tell the user clearly
+async function toolCreateFolder({ repo, path }) {
+  // GitHub doesn't support empty folders, create a .gitkeep
+  await toolCreateFile({ repo, path: `${path}/.gitkeep`, content: '' });
+  return { success: true, message: `✅ Created folder: ${path}` };
+}
 
-═══════════════════════════════════════════════════════
-COMMUNICATION STYLE
-═══════════════════════════════════════════════════════
+async function toolMoveFile({ repo, from, to }) {
+  const { content, sha } = await toolReadFile({ repo, path: from });
+  await toolCreateFile({ repo, path: to, content });
+  // delete old file
+  const url = `${repoUrl(repo)}/contents/${from}`;
+  await fetch(url, {
+    method: 'DELETE',
+    headers: ghHeaders,
+    body: JSON.stringify({ message: `refactor: move ${from} to ${to}`, sha }),
+  });
+  return { success: true, message: `✅ Moved: ${from} → ${to}` };
+}
 
-✅ DO:
-- Announce what you're about to do BEFORE doing it
-- Give brief status updates during long tasks
-- Summarize what you accomplished when done
-- Be specific: "I created 3 files: index.js, utils.js, config.js"
-- Ask ONE clarifying question if genuinely needed
+async function toolGithubCreateRepo({ name, description, isPrivate }) {
+  const data = await ghPost(`${GH_BASE}/user/repos`, {
+    name,
+    description: description || '',
+    private: isPrivate || false,
+    auto_init: true,
+  });
+  return { success: true, message: `✅ Repo created: ${data.full_name}`, url: data.html_url };
+}
 
-❌ DON'T:
-- Dump huge amounts of code verbally
-- Say "I cannot" without trying first
-- Apologize excessively  
-- Repeat yourself
-- Start tool calls without announcing them
+async function toolGithubTriggerAction({ repo, workflow, inputs }) {
+  const url = `${repoUrl(repo)}/actions/workflows/${workflow}/dispatches`;
+  await ghPost(url, { ref: 'main', inputs: inputs || {} });
+  return { success: true, message: `✅ Triggered workflow: ${workflow}` };
+}
 
-Example of GOOD behavior:
-User: "Set up a basic Express server"
-ARIA: "Got it. Here's my plan:
-  Step 1: Create the project structure
-  Step 2: Write server.js with Express  
-  Step 3: Create package.json
-  Step 4: Push everything to GitHub
-  Starting now..."
+async function toolGithubGetLogs({ repo }) {
+  const url = `${repoUrl(repo)}/actions/runs?per_page=5`;
+  const data = await ghGet(url);
+  const runs = (data.workflow_runs || []).map(r => ({
+    name: r.name,
+    status: r.status,
+    conclusion: r.conclusion,
+    created_at: r.created_at,
+  }));
+  return { success: true, runs };
+}
 
-═══════════════════════════════════════════════════════
-AUTO-DEBUG MODE
-═══════════════════════════════════════════════════════
+async function toolWebSearch({ query }) {
+  return { success: true, message: `🔍 Search query: ${query}`, searchUrl: `https://www.google.com/search?q=${encodeURIComponent(query)}` };
+}
 
-When you encounter an error in code or tools:
-1. READ the error message completely
-2. IDENTIFY the root cause (syntax? logic? missing dependency?)
-3. PROPOSE a fix and explain it briefly
-4. APPLY the fix using the appropriate tool
-5. VERIFY the fix worked
-6. If not fixed after 3 attempts → explain clearly to user
+async function toolReadWebPage({ url }) {
+  try {
+    const res = await fetch(url);
+    const html = await res.text();
+    const text = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 3000);
+    return { success: true, content: text };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
 
-═══════════════════════════════════════════════════════
-MEMORY USAGE
-═══════════════════════════════════════════════════════
-You have access to conversation memory. Always:
-- Reference past context when relevant
-- Build on previous work (don't start from scratch)
-- Remember user preferences mentioned in past sessions
-- Current user: {userName}
-- Memory context: {memoryContext}
-`;
+function toolShowStatus({ message }) {
+  return { success: true, status: message };
+}
 
-/**
- * HOW TO INTEGRATE IN server.js:
- * 
- * import { ARIA_SYSTEM_PROMPT } from './server_system_prompt.js';
- * 
- * const session = await ai.live.connect({
- *   model: 'gemini-2.0-flash-live-001',
- *   config: {
- *     systemInstruction: ARIA_SYSTEM_PROMPT
- *       .replace('{userName}', userName)
- *       .replace('{memoryContext}', memory),
- *     tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
- *     ...
- *   }
- * });
- * 
- * ─────────────────────────────────────────────────────
- * TOOL DECLARATIONS — এগুলো Gemini কে বলো কোন tools আছে
- * ─────────────────────────────────────────────────────
- */
+function toolUpdateCurrentTask({ task }) {
+  return { success: true, task };
+}
 
-export const TOOL_DECLARATIONS = [
-  {
-    name: "createFile",
-    description: "Create a new file in a GitHub repository with the given content",
-    parameters: {
-      type: "object",
-      properties: {
-        repo: { type: "string", description: "Repository name (uses default if not specified)" },
-        path: { type: "string", description: "File path including filename, e.g. 'src/index.js'" },
-        content: { type: "string", description: "Full content of the file" }
-      },
-      required: ["path", "content"]
+function toolNotify({ title, body }) {
+  return { success: true, notification: { title, body } };
+}
+
+// ─────────────────────────────────────────────────────────────
+// TOOL DISPATCHER
+// ─────────────────────────────────────────────────────────────
+async function dispatchTool(name, args) {
+  console.log(`🔧 Tool: ${name}`, args);
+  try {
+    switch (name) {
+      case 'createFile':         return await toolCreateFile(args);
+      case 'readFile':           return await toolReadFile(args);
+      case 'editFile':           return await toolEditFile(args);
+      case 'appendFile':         return await toolAppendFile(args);
+      case 'listFiles':          return await toolListFiles(args);
+      case 'searchInFile':       return await toolSearchInFile(args);
+      case 'createFolder':       return await toolCreateFolder(args);
+      case 'moveFile':           return await toolMoveFile(args);
+      case 'githubCreateRepo':   return await toolGithubCreateRepo(args);
+      case 'githubTriggerAction':return await toolGithubTriggerAction(args);
+      case 'githubGetLogs':      return await toolGithubGetLogs(args);
+      case 'webSearch':          return await toolWebSearch(args);
+      case 'readWebPage':        return await toolReadWebPage(args);
+      case 'showStatus':         return toolShowStatus(args);
+      case 'updateCurrentTask':  return toolUpdateCurrentTask(args);
+      case 'notify':             return toolNotify(args);
+      default:
+        return { success: false, error: `Unknown tool: ${name}` };
     }
-  },
-  {
-    name: "readFile",
-    description: "Read the contents of a file from a GitHub repository",
-    parameters: {
-      type: "object",
-      properties: {
-        repo: { type: "string" },
-        path: { type: "string", description: "File path to read" }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "editFile",
-    description: "Replace the entire content of an existing file in GitHub",
-    parameters: {
-      type: "object",
-      properties: {
-        repo: { type: "string" },
-        path: { type: "string" },
-        content: { type: "string", description: "New complete content of the file" }
-      },
-      required: ["path", "content"]
-    }
-  },
-  {
-    name: "appendFile",
-    description: "Append content to the end of an existing file",
-    parameters: {
-      type: "object",
-      properties: {
-        repo: { type: "string" },
-        path: { type: "string" },
-        content: { type: "string", description: "Content to append" }
-      },
-      required: ["path", "content"]
-    }
-  },
-  {
-    name: "listFiles",
-    description: "List files and folders in a directory of a GitHub repository",
-    parameters: {
-      type: "object",
-      properties: {
-        repo: { type: "string" },
-        path: { type: "string", description: "Directory path, empty string for root" }
-      },
-      required: []
-    }
-  },
-  {
-    name: "searchInFile",
-    description: "Search for a text pattern within a file",
-    parameters: {
-      type: "object",
-      properties: {
-        repo: { type: "string" },
-        path: { type: "string" },
-        query: { type: "string", description: "Text to search for" }
-      },
-      required: ["path", "query"]
-    }
-  },
-  {
-    name: "createFolder",
-    description: "Create a new folder in the repository",
-    parameters: {
-      type: "object",
-      properties: {
-        repo: { type: "string" },
-        path: { type: "string", description: "Folder path to create" }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "moveFile",
-    description: "Move or rename a file in the repository",
-    parameters: {
-      type: "object",
-      properties: {
-        repo: { type: "string" },
-        from: { type: "string", description: "Source file path" },
-        to: { type: "string", description: "Destination file path" }
-      },
-      required: ["from", "to"]
-    }
-  },
-  {
-    name: "showStatus",
-    description: "Display a status message in the UI to inform the user what ARIA is currently doing",
-    parameters: {
-      type: "object",
-      properties: {
-        message: { type: "string", description: "Status message to display" }
-      },
-      required: ["message"]
-    }
-  },
-  {
-    name: "updateCurrentTask",
-    description: "Update the current task display and save to memory",
-    parameters: {
-      type: "object",
-      properties: {
-        task: { type: "string", description: "Current task description" }
-      },
-      required: ["task"]
-    }
-  },
-  {
-    name: "githubCreateRepo",
-    description: "Create a new GitHub repository",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Repository name" },
-        description: { type: "string", description: "Repository description" },
-        isPrivate: { type: "boolean", description: "Whether the repo should be private" }
-      },
-      required: ["name"]
-    }
-  },
-  {
-    name: "githubTriggerAction",
-    description: "Trigger a GitHub Actions workflow",
-    parameters: {
-      type: "object",
-      properties: {
-        repo: { type: "string" },
-        workflow: { type: "string", description: "Workflow filename, e.g. build.yml" },
-        inputs: { type: "object", description: "Optional workflow inputs" }
-      },
-      required: ["repo", "workflow"]
-    }
-  },
-  {
-    name: "githubGetLogs",
-    description: "Get recent GitHub Actions run logs for a repository",
-    parameters: {
-      type: "object",
-      properties: {
-        repo: { type: "string" }
-      },
-      required: ["repo"]
-    }
-  },
-  {
-    name: "webSearch",
-    description: "Search the web for information by opening a Google search",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query" }
-      },
-      required: ["query"]
-    }
-  },
-  {
-    name: "readWebPage",
-    description: "Read and extract text content from a web page URL",
-    parameters: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "Full URL of the web page" }
-      },
-      required: ["url"]
-    }
-  },
-  {
-    name: "notify",
-    description: "Send a browser notification to the user",
-    parameters: {
-      type: "object",
-      properties: {
-        title: { type: "string" },
-        body: { type: "string" }
-      },
-      required: ["title", "body"]
+  } catch (err) {
+    console.error(`❌ Tool error (${name}):`, err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// WEBSOCKET — CLIENT CONNECTION HANDLER
+// ─────────────────────────────────────────────────────────────
+wss.on('connection', (clientWs) => {
+  console.log('🟢 Client connected');
+  let geminiSession = null;
+  let isSessionOpen = false;
+
+  function sendToClient(payload) {
+    if (clientWs.readyState === 1) {
+      clientWs.send(JSON.stringify(payload));
     }
   }
-];
+
+  // ── Open Gemini Live session ─────────────────────────────
+  async function openGeminiSession(userName = 'User', memoryContext = '') {
+    try {
+      const systemInstruction = ARIA_SYSTEM_PROMPT
+        .replace('{userName}', userName)
+        .replace('{memoryContext}', memoryContext);
+
+      geminiSession = await ai.live.connect({
+        model: 'gemini-2.0-flash-live-001',
+        config: {
+          systemInstruction,
+          tools: [{ functionDeclarations: TOOL_DECLARATIONS }],
+          generationConfig: {
+            responseModalities: ['AUDIO', 'TEXT'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: 'Aoede' },
+              },
+            },
+          },
+        },
+        callbacks: {
+          onopen: () => {
+            isSessionOpen = true;
+            console.log('✅ Gemini session open');
+            sendToClient({ type: 'session_ready' });
+          },
+          onmessage: async (msg) => {
+            await handleGeminiMessage(msg);
+          },
+          onerror: (err) => {
+            console.error('❌ Gemini error:', err);
+            sendToClient({ type: 'error', message: err.message || 'Gemini error' });
+          },
+          onclose: () => {
+            isSessionOpen = false;
+            console.log('🔴 Gemini session closed');
+            sendToClient({ type: 'session_closed' });
+          },
+        },
+      });
+    } catch (err) {
+      console.error('❌ Failed to open Gemini session:', err);
+      sendToClient({ type: 'error', message: 'Failed to connect to Gemini: ' + err.message });
+    }
+  }
+
+  // ── Handle messages from Gemini ──────────────────────────
+  async function handleGeminiMessage(msg) {
+    // Audio output
+    if (msg.data) {
+      sendToClient({ type: 'audio', data: msg.data });
+      return;
+    }
+
+    // Server content (text + tool calls)
+    if (msg.serverContent) {
+      const parts = msg.serverContent?.modelTurn?.parts || [];
+      for (const part of parts) {
+        if (part.text) {
+          sendToClient({ type: 'text', text: part.text });
+        }
+      }
+    }
+
+    // Tool calls
+    if (msg.toolCall) {
+      const calls = msg.toolCall.functionCalls || [];
+      const responses = [];
+
+      for (const call of calls) {
+        sendToClient({ type: 'tool_call', name: call.name, args: call.args });
+        const result = await dispatchTool(call.name, call.args || {});
+        sendToClient({ type: 'tool_result', name: call.name, result });
+        responses.push({ id: call.id, name: call.name, response: result });
+      }
+
+      // Send tool results back to Gemini
+      if (geminiSession && isSessionOpen) {
+        await geminiSession.sendToolResponse({ functionResponses: responses });
+      }
+    }
+
+    // Turn complete
+    if (msg.serverContent?.turnComplete) {
+      sendToClient({ type: 'turn_complete' });
+    }
+  }
+
+  // ── Handle messages from Frontend client ────────────────
+  clientWs.on('message', async (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+
+      switch (msg.type) {
+        // Client wants to start session
+        case 'start_session':
+          if (!isSessionOpen) {
+            await openGeminiSession(msg.userName, msg.memoryContext);
+          }
+          break;
+
+        // Text message from user
+        case 'text':
+          if (geminiSession && isSessionOpen) {
+            await geminiSession.send({ text: msg.text });
+          } else {
+            sendToClient({ type: 'error', message: 'Session not ready. Please reconnect.' });
+          }
+          break;
+
+        // Audio chunk from mic
+        case 'audio':
+          if (geminiSession && isSessionOpen && msg.data) {
+            await geminiSession.send({
+              realtimeInput: {
+                mediaChunks: [{ mimeType: 'audio/pcm;rate=16000', data: msg.data }],
+              },
+            });
+          }
+          break;
+
+        // Close session
+        case 'close_session':
+          if (geminiSession && isSessionOpen) {
+            await geminiSession.close();
+          }
+          break;
+
+        default:
+          console.warn('Unknown message type:', msg.type);
+      }
+    } catch (err) {
+      console.error('❌ Message handling error:', err);
+      sendToClient({ type: 'error', message: err.message });
+    }
+  });
+
+  // ── Client disconnected ─────────────────────────────────
+  clientWs.on('close', async () => {
+    console.log('🔴 Client disconnected');
+    if (geminiSession && isSessionOpen) {
+      try { await geminiSession.close(); } catch (_) {}
+    }
+  });
+
+  clientWs.on('error', (err) => {
+    console.error('WebSocket client error:', err);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
+// START SERVER
+// ─────────────────────────────────────────────────────────────
+httpServer.listen(PORT, () => {
+  console.log(`🚀 ARIA v3.0 server running on port ${PORT}`);
+});
