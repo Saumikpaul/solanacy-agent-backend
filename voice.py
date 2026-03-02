@@ -14,7 +14,6 @@ VOICE_MODEL = settings.VOICE_MODEL
 
 LIVE_CONFIG = types.LiveConnectConfig(
     response_modalities=["AUDIO"],
-    # system_instruction must be types.Content, NOT a plain string
     system_instruction=types.Content(
         parts=[types.Part(text=(
             "You are Solanacy Agentic AI — a powerful autonomous voice assistant. "
@@ -55,7 +54,7 @@ class VoiceHandler:
                 )
                 for r in results:
                     if isinstance(r, Exception):
-                        logger.warning(f"Voice gather exception: {r}")
+                        logger.warning(f"Voice gather exception: {type(r).__name__}: {r}")
 
         except Exception as e:
             logger.error(f"❌ Gemini Live connect failed: {e}")
@@ -64,7 +63,10 @@ class VoiceHandler:
             except Exception:
                 pass
 
+    # ── Client → Gemini ──────────────────────────────────────────────────────
+
     async def _client_to_gemini(self, websocket: WebSocket, live_session):
+        """Forward audio from frontend to Gemini. Runs until WebSocket disconnects."""
         try:
             while True:
                 data = await websocket.receive()
@@ -88,41 +90,57 @@ class VoiceHandler:
                     except Exception as e:
                         logger.debug(f"Client→Gemini parse error: {e}")
         except Exception as e:
-            logger.debug(f"Client→Gemini loop ended: {e}")
+            logger.debug(f"Client→Gemini loop ended: {type(e).__name__}: {e}")
+
+    # ── Gemini → Client ──────────────────────────────────────────────────────
 
     async def _gemini_to_client(self, live_session, websocket: WebSocket, session_id: str, memory: MemoryManager):
+        """
+        Forward Gemini responses to frontend.
+
+        IMPORTANT: live_session.receive() is a TURN-based iterator.
+        Each call returns one turn's worth of responses.
+        We MUST loop with `while True` to keep receiving across multiple turns.
+        Without this outer loop, the coroutine exits after the first turn,
+        causing the session to close and the mic to turn off after ~1 second.
+        """
         transcript_buffer = ""
+
         try:
-            async for response in live_session.receive():
-                sc = response.server_content
-                if not sc:
-                    continue
+            while True:  # ← CRITICAL: keep receiving across all turns
+                async for response in live_session.receive():
+                    sc = response.server_content
+                    if not sc:
+                        continue
 
-                if sc.model_turn:
-                    audio_parts = []
-                    for part in sc.model_turn.parts:
-                        if part.inline_data and isinstance(part.inline_data.data, bytes):
-                            b64 = base64.b64encode(part.inline_data.data).decode()
-                            audio_parts.append({
-                                "inlineData": {
-                                    "data": b64,
-                                    "mimeType": part.inline_data.mime_type or "audio/pcm",
-                                }
+                    if sc.model_turn:
+                        audio_parts = []
+
+                        for part in sc.model_turn.parts:
+                            # Audio
+                            if part.inline_data and isinstance(part.inline_data.data, bytes):
+                                b64 = base64.b64encode(part.inline_data.data).decode()
+                                audio_parts.append({
+                                    "inlineData": {
+                                        "data": b64,
+                                        "mimeType": part.inline_data.mime_type or "audio/pcm",
+                                    }
+                                })
+                            # Transcript
+                            if hasattr(part, "text") and part.text:
+                                transcript_buffer += part.text
+                                await websocket.send_json({"type": "transcript", "text": part.text})
+
+                        if audio_parts:
+                            await websocket.send_json({
+                                "serverContent": {"modelTurn": {"parts": audio_parts}}
                             })
-                        if hasattr(part, "text") and part.text:
-                            transcript_buffer += part.text
-                            await websocket.send_json({"type": "transcript", "text": part.text})
 
-                    if audio_parts:
-                        await websocket.send_json({
-                            "serverContent": {"modelTurn": {"parts": audio_parts}}
-                        })
-
-                if sc.turn_complete:
-                    await websocket.send_json({"type": "turn_complete"})
-                    if transcript_buffer.strip():
-                        await memory.save_interaction(session_id, "model", transcript_buffer.strip())
-                        transcript_buffer = ""
+                    if sc.turn_complete:
+                        await websocket.send_json({"type": "turn_complete"})
+                        if transcript_buffer.strip():
+                            await memory.save_interaction(session_id, "model", transcript_buffer.strip())
+                            transcript_buffer = ""
 
         except Exception as e:
-            logger.debug(f"Gemini→Client loop ended: {e}")
+            logger.debug(f"Gemini→Client loop ended: {type(e).__name__}: {e}")
