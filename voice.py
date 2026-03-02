@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import json
+import base64
 from fastapi import WebSocket
 from google import genai
 from config import settings
@@ -13,7 +14,7 @@ client = genai.Client(api_key=settings.GEMINI_API_KEY)
 MODEL = settings.VOICE_MODEL
 CONFIG = {
     "response_modalities": ["AUDIO"],
-    "system_instruction": "You are Solanacy Agentic AI — a powerful autonomous voice assistant. Be concise, natural, and helpful. Complete tasks autonomously.",
+    "system_instruction": "You are Solanacy Agentic AI — a powerful autonomous voice assistant. Be concise, natural, and helpful. Complete tasks autonomously. Never say you can't do something.",
     "speech_config": {
         "voice_config": {
             "prebuilt_voice_config": {
@@ -29,23 +30,16 @@ class VoiceHandler:
 
     async def handle_session(self, websocket: WebSocket, session_id: str, memory: MemoryManager):
         logger.info(f"🎙️ Voice session: {session_id}")
-
-        audio_out = asyncio.Queue()
-        audio_in = asyncio.Queue(maxsize=20)
-
         try:
             async with client.aio.live.connect(model=MODEL, config=CONFIG) as live_session:
                 logger.info(f"✅ Gemini Live connected: {session_id}")
-                await websocket.send_json({"type": "ready", "message": "Voice session ready"})
+                await websocket.send_json({"type": "ready"})
 
                 await asyncio.gather(
-                    self._receive_from_browser(websocket, live_session, audio_in),
-                    self._send_to_gemini(live_session, audio_in),
-                    self._receive_from_gemini(live_session, websocket, session_id, memory, audio_out),
-                    self._send_to_browser(websocket, audio_out),
+                    self._client_to_gemini(websocket, live_session),
+                    self._gemini_to_client(live_session, websocket, session_id, memory),
                     return_exceptions=True
                 )
-
         except Exception as e:
             logger.error(f"❌ Voice error: {e}")
             try:
@@ -53,34 +47,34 @@ class VoiceHandler:
             except:
                 pass
 
-    async def _receive_from_browser(self, websocket: WebSocket, live_session, audio_in: asyncio.Queue):
+    async def _client_to_gemini(self, websocket: WebSocket, live_session):
+        """Receive base64 JSON from frontend → send to Gemini"""
         try:
             while True:
                 data = await websocket.receive()
-                if "bytes" in data:
-                    await audio_in.put({"data": data["bytes"], "mime_type": "audio/pcm;rate=16000"})
-                elif "text" in data:
+                if "text" in data:
                     try:
-                        parsed = json.loads(data["text"])
-                        if parsed.get("type") == "text":
-                            await live_session.send_client_content(
-                                turns=[{"role": "user", "parts": [{"text": parsed.get("message", "")}]}],
-                                turn_complete=True
-                            )
-                    except json.JSONDecodeError:
-                        pass
+                        msg = json.loads(data["text"])
+                        # Frontend sends: { realtime_input: { media_chunks: [{ mime_type, data }] } }
+                        if "realtime_input" in msg:
+                            chunks = msg["realtime_input"].get("media_chunks", [])
+                            for chunk in chunks:
+                                audio_bytes = base64.b64decode(chunk["data"])
+                                await live_session.send_realtime_input(
+                                    audio={"data": audio_bytes, "mime_type": "audio/pcm;rate=16000"}
+                                )
+                    except Exception as e:
+                        logger.debug(f"Parse error: {e}")
+                elif "bytes" in data:
+                    # Also support raw bytes as fallback
+                    await live_session.send_realtime_input(
+                        audio={"data": data["bytes"], "mime_type": "audio/pcm;rate=16000"}
+                    )
         except Exception as e:
-            logger.debug(f"Browser→Queue ended: {e}")
+            logger.debug(f"Client→Gemini ended: {e}")
 
-    async def _send_to_gemini(self, live_session, audio_in: asyncio.Queue):
-        try:
-            while True:
-                msg = await audio_in.get()
-                await live_session.send_realtime_input(audio=msg)
-        except Exception as e:
-            logger.debug(f"Queue→Gemini ended: {e}")
-
-    async def _receive_from_gemini(self, live_session, websocket: WebSocket, session_id: str, memory: MemoryManager, audio_out: asyncio.Queue):
+    async def _gemini_to_client(self, live_session, websocket: WebSocket, session_id: str, memory: MemoryManager):
+        """Receive from Gemini → forward as base64 JSON to frontend"""
         transcript_buffer = ""
         try:
             while True:
@@ -91,14 +85,28 @@ class VoiceHandler:
                         continue
 
                     if sc.model_turn:
+                        parts = []
                         for part in sc.model_turn.parts:
-                            # Audio — put in queue, DO NOT clear here
                             if part.inline_data and isinstance(part.inline_data.data, bytes):
-                                await audio_out.put(part.inline_data.data)
-                                logger.debug(f"🔊 Audio chunk: {len(part.inline_data.data)} bytes")
+                                # Encode audio as base64 — same format as working example
+                                b64 = base64.b64encode(part.inline_data.data).decode()
+                                parts.append({
+                                    "inlineData": {
+                                        "data": b64,
+                                        "mimeType": part.inline_data.mime_type or "audio/pcm"
+                                    }
+                                })
                             if hasattr(part, 'text') and part.text:
                                 transcript_buffer += part.text
                                 await websocket.send_json({"type": "transcript", "text": part.text})
+
+                        if parts:
+                            # Send in same format as Gemini raw JSON
+                            await websocket.send_json({
+                                "serverContent": {
+                                    "modelTurn": {"parts": parts}
+                                }
+                            })
 
                     if sc.turn_complete:
                         await websocket.send_json({"type": "turn_complete"})
@@ -107,13 +115,4 @@ class VoiceHandler:
                             transcript_buffer = ""
 
         except Exception as e:
-            logger.debug(f"Gemini→Queue ended: {e}")
-
-    async def _send_to_browser(self, websocket: WebSocket, audio_out: asyncio.Queue):
-        try:
-            while True:
-                audio_bytes = await audio_out.get()
-                await websocket.send_bytes(audio_bytes)
-                logger.debug(f"📤 Sent audio to browser: {len(audio_bytes)} bytes")
-        except Exception as e:
-            logger.debug(f"Queue→Browser ended: {e}")
+            logger.debug(f"Gemini→Client ended: {e}")
