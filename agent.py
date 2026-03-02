@@ -11,7 +11,6 @@ from tools.code_tool import run_code, write_code
 from tools.news_tool import get_news
 from tools.schedule_tool import set_reminder, get_reminders
 from tools.file_tool import create_file, list_files, read_file
-from tools.social_tool import post_social
 from tools.price_tool import find_deals
 
 logger = logging.getLogger(__name__)
@@ -20,12 +19,11 @@ SYSTEM_PROMPT = """You are Solanacy Agentic AI — an extremely powerful, fully 
 
 Your capabilities:
 - Web research & search
-- Email handling (read, write, reply)
-- Code writing & debugging
+- Email handling (send only — reading requires IMAP config)
+- Code writing & execution (Python only)
 - Daily news briefing
 - Schedule & reminders management
 - File & document management
-- Social media posting
 - Price & deal finding
 - General conversation & assistance
 
@@ -35,8 +33,9 @@ You operate with FULL AUTONOMY. When given a task:
 3. Complete it end-to-end
 4. Report back clearly
 
-Be concise, efficient, and always complete the task. Never say you can't do something — find a way.
-You speak like a highly capable assistant — professional yet friendly."""
+Be concise, efficient, and always complete the task.
+You speak like a highly capable assistant — professional yet friendly.
+When writing code, ALWAYS use write_code to generate it, then run_code to execute and verify it."""
 
 TOOLS_CONFIG = [
     {
@@ -49,8 +48,8 @@ TOOLS_CONFIG = [
                     "properties": {
                         "query": {"type": "string", "description": "Search query"}
                     },
-                    "required": ["query"]
-                }
+                    "required": ["query"],
+                },
             },
             {
                 "name": "get_news",
@@ -59,33 +58,33 @@ TOOLS_CONFIG = [
                     "type": "object",
                     "properties": {
                         "topic": {"type": "string", "description": "News topic"},
-                        "count": {"type": "integer", "description": "Number of articles"}
+                        "count": {"type": "integer", "description": "Number of articles (default 5)"},
                     },
-                    "required": ["topic"]
-                }
+                    "required": ["topic"],
+                },
             },
             {
                 "name": "write_code",
-                "description": "Write code in any programming language",
+                "description": "Write complete, working code in any programming language",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "description": {"type": "string"},
-                        "language": {"type": "string"}
+                        "description": {"type": "string", "description": "What the code should do"},
+                        "language": {"type": "string", "description": "Programming language"},
                     },
-                    "required": ["description", "language"]
-                }
+                    "required": ["description", "language"],
+                },
             },
             {
                 "name": "run_code",
-                "description": "Execute Python code",
+                "description": "Execute Python code and return its output",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "code": {"type": "string", "description": "Python code to run"}
                     },
-                    "required": ["code"]
-                }
+                    "required": ["code"],
+                },
             },
             {
                 "name": "find_deals",
@@ -93,10 +92,10 @@ TOOLS_CONFIG = [
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "product": {"type": "string", "description": "Product to search for"}
+                        "product": {"type": "string", "description": "Product to search"}
                     },
-                    "required": ["product"]
-                }
+                    "required": ["product"],
+                },
             },
             {
                 "name": "set_reminder",
@@ -105,19 +104,16 @@ TOOLS_CONFIG = [
                     "type": "object",
                     "properties": {
                         "title": {"type": "string"},
-                        "datetime": {"type": "string"},
-                        "description": {"type": "string"}
+                        "datetime": {"type": "string", "description": "ISO format or natural language datetime"},
+                        "description": {"type": "string"},
                     },
-                    "required": ["title", "datetime"]
-                }
+                    "required": ["title", "datetime"],
+                },
             },
             {
                 "name": "get_reminders",
                 "description": "Get all scheduled reminders",
-                "parameters": {
-                    "type": "object",
-                    "properties": {}
-                }
+                "parameters": {"type": "object", "properties": {}},
             },
             {
                 "name": "create_file",
@@ -126,19 +122,40 @@ TOOLS_CONFIG = [
                     "type": "object",
                     "properties": {
                         "filename": {"type": "string"},
-                        "content": {"type": "string"}
+                        "content": {"type": "string"},
                     },
-                    "required": ["filename", "content"]
-                }
+                    "required": ["filename", "content"],
+                },
+            },
+            {
+                "name": "read_file",
+                "description": "Read the contents of a stored file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "description": "Filename to read"}
+                    },
+                    "required": ["filename"],
+                },
             },
             {
                 "name": "list_files",
                 "description": "List all stored files",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "send_email",
+                "description": "Send an email (requires EMAIL_USER and EMAIL_PASS env vars)",
                 "parameters": {
                     "type": "object",
-                    "properties": {}
-                }
-            }
+                    "properties": {
+                        "to": {"type": "string", "description": "Recipient email"},
+                        "subject": {"type": "string"},
+                        "body": {"type": "string"},
+                    },
+                    "required": ["to", "subject", "body"],
+                },
+            },
         ]
     }
 ]
@@ -152,8 +169,11 @@ TOOL_MAP = {
     "set_reminder": set_reminder,
     "get_reminders": get_reminders,
     "create_file": create_file,
+    "read_file": read_file,
     "list_files": list_files,
+    "send_email": send_email,
 }
+
 
 class SolanacyAgent:
     def __init__(self, memory: MemoryManager):
@@ -162,95 +182,90 @@ class SolanacyAgent:
         self.model = genai.GenerativeModel(
             model_name=settings.GEMINI_TEXT_MODEL,
             system_instruction=SYSTEM_PROMPT,
-            tools=TOOLS_CONFIG
+            tools=TOOLS_CONFIG,
         )
         logger.info("✅ Solanacy Agent initialized with Gemini")
 
-    async def run(self, task: str, context: Optional[str] = None, session_id: str = "default") -> dict:
+    async def run(
+        self,
+        task: str,
+        context: Optional[str] = None,
+        session_id: str = "default",
+    ) -> dict:
         task_id = str(uuid.uuid4())[:8]
-        
+
         # Get conversation history
         history = await self.memory.get_recent_context(session_id, limit=10)
-        
-        # Build messages
+
+        # Build message list for Gemini chat history
         messages = []
         for h in history:
-            messages.append({"role": h["role"], "parts": [h["content"]]})
-        
+            role = h["role"]
+            # Gemini expects "user" or "model"
+            if role not in ("user", "model"):
+                role = "user"
+            messages.append({"role": role, "parts": [h["content"]]})
+
         user_message = task
         if context:
             user_message = f"Context: {context}\n\nTask: {task}"
-        
-        messages.append({"role": "user", "parts": [user_message]})
-        
-        # Save user message
+
         await self.memory.save_interaction(session_id, "user", task, task_id)
-        
+
         try:
-            # Agentic loop
-            chat = self.model.start_chat(history=messages[:-1])
+            chat = self.model.start_chat(history=messages)
             response = await asyncio.to_thread(chat.send_message, user_message)
-            
-            # Handle tool calls
+
+            # ── Agentic tool-calling loop ─────────────────────────────────────
             max_iterations = 5
-            iteration = 0
-            
-            while iteration < max_iterations:
-                iteration += 1
-                
-                # Check for function calls
-                has_tool_call = False
+            for _ in range(max_iterations):
                 tool_results = []
-                
+
                 for part in response.parts:
-                    if hasattr(part, 'function_call') and part.function_call:
-                        has_tool_call = True
-                        fn_name = part.function_call.name
-                        fn_args = dict(part.function_call.args)
-                        
-                        logger.info(f"🔧 Tool call: {fn_name}({fn_args})")
-                        
-                        # Execute tool
-                        tool_fn = TOOL_MAP.get(fn_name)
-                        if tool_fn:
-                            try:
-                                result = await asyncio.to_thread(tool_fn, **fn_args)
-                            except Exception as e:
-                                result = f"Tool error: {str(e)}"
-                        else:
-                            result = f"Tool {fn_name} not found"
-                        
-                        tool_results.append({
-                            "function_response": {
-                                "name": fn_name,
-                                "response": {"result": str(result)}
-                            }
-                        })
-                
-                if not has_tool_call:
-                    break
-                
-                # Send tool results back
+                    if not (hasattr(part, "function_call") and part.function_call):
+                        continue
+
+                    fn_name = part.function_call.name
+                    fn_args = dict(part.function_call.args)
+                    logger.info(f"🔧 Tool: {fn_name}({fn_args})")
+
+                    tool_fn = TOOL_MAP.get(fn_name)
+                    if tool_fn:
+                        try:
+                            result = await asyncio.to_thread(tool_fn, **fn_args)
+                        except Exception as e:
+                            result = f"Tool error: {str(e)}"
+                    else:
+                        result = f"Unknown tool: {fn_name}"
+
+                    tool_results.append({
+                        "function_response": {
+                            "name": fn_name,
+                            "response": {"result": str(result)},
+                        }
+                    })
+
+                if not tool_results:
+                    break  # No tool calls → final answer ready
+
                 response = await asyncio.to_thread(chat.send_message, tool_results)
-            
-            # Extract final text
-            final_text = ""
-            for part in response.parts:
-                if hasattr(part, 'text') and part.text:
-                    final_text += part.text
-            
+
+            # ── Extract final text ────────────────────────────────────────────
+            final_text = "".join(
+                part.text for part in response.parts
+                if hasattr(part, "text") and part.text
+            )
             if not final_text:
-                final_text = "Task completed successfully."
-            
-            # Save response
+                final_text = "Task completed."
+
             await self.memory.save_interaction(session_id, "model", final_text, task_id)
             await self.memory.save_task(task_id, task, final_text, session_id)
-            
+
             logger.info(f"✅ Task {task_id} completed")
             return {"output": final_text, "task_id": task_id}
-            
+
         except Exception as e:
             logger.error(f"❌ Agent error: {e}")
-            error_msg = f"I encountered an error: {str(e)}. Please try again."
-            await self.memory.save_interaction(session_id, "model", error_msg, task_id)
-            return {"output": error_msg, "task_id": task_id}
+            err = f"Error: {str(e)}. Please try again."
+            await self.memory.save_interaction(session_id, "model", err, task_id)
+            return {"output": err, "task_id": task_id}
