@@ -10,7 +10,7 @@ from memory import MemoryManager
 
 logger = logging.getLogger(__name__)
 
-GEMINI_LIVE_URL = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key={settings.GEMINI_API_KEY}"
+GEMINI_LIVE_URL = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key={settings.GEMINI_API_KEY}"
 
 VOICE_SYSTEM_PROMPT = """You are Solanacy Agentic AI — a powerful autonomous voice assistant.
 Be concise, natural, and helpful. Complete tasks autonomously.
