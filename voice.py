@@ -56,8 +56,8 @@ class VoiceHandler:
                     "realtime_input_config": {
                         "automatic_activity_detection": {
                             "disabled": False,
-                            "start_of_speech_sensitivity": self.threshold,
-                            "end_of_speech_sensitivity": self.threshold,
+                            "start_of_speech_sensitivity": "START_SENSITIVITY_LOW",
+                            "end_of_speech_sensitivity": "END_SENSITIVITY_LOW",
                             "prefix_padding_ms": 200,
                             "silence_duration_ms": 800
                         }
