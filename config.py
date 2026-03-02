@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     # Gemini
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = "gemini-2.5-flash-native-audio-preview-12-2025"
-    GEMINI_TEXT_MODEL: str = "gemini-2.5-flash"
+    GEMINI_TEXT_MODEL: str = "gemini-1.5-flash"  # gemini-1.5-flash has higher free quota
     
     # Groq (backup)
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
