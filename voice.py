@@ -23,9 +23,6 @@ CONFIG = {
     }
 }
 
-audio_queue_output = asyncio.Queue()
-audio_queue_mic = asyncio.Queue(maxsize=10)
-
 class VoiceHandler:
     def __init__(self):
         logger.info(f"✅ VoiceHandler initialized | model={MODEL}")
@@ -33,11 +30,8 @@ class VoiceHandler:
     async def handle_session(self, websocket: WebSocket, session_id: str, memory: MemoryManager):
         logger.info(f"🎙️ Voice session: {session_id}")
 
-        # Clear queues
-        while not audio_queue_output.empty():
-            audio_queue_output.get_nowait()
-        while not audio_queue_mic.empty():
-            audio_queue_mic.get_nowait()
+        audio_out = asyncio.Queue()
+        audio_in = asyncio.Queue(maxsize=20)
 
         try:
             async with client.aio.live.connect(model=MODEL, config=CONFIG) as live_session:
@@ -45,10 +39,10 @@ class VoiceHandler:
                 await websocket.send_json({"type": "ready", "message": "Voice session ready"})
 
                 await asyncio.gather(
-                    self._receive_from_browser(websocket, live_session),
-                    self._send_to_gemini(live_session),
-                    self._receive_from_gemini(live_session, websocket, session_id, memory),
-                    self._send_to_browser(websocket),
+                    self._receive_from_browser(websocket, live_session, audio_in),
+                    self._send_to_gemini(live_session, audio_in),
+                    self._receive_from_gemini(live_session, websocket, session_id, memory, audio_out),
+                    self._send_to_browser(websocket, audio_out),
                     return_exceptions=True
                 )
 
@@ -59,18 +53,12 @@ class VoiceHandler:
             except:
                 pass
 
-    async def _receive_from_browser(self, websocket: WebSocket, live_session):
-        """Get audio from browser → put in mic queue"""
+    async def _receive_from_browser(self, websocket: WebSocket, live_session, audio_in: asyncio.Queue):
         try:
             while True:
                 data = await websocket.receive()
-
                 if "bytes" in data:
-                    await audio_queue_mic.put({
-                        "data": data["bytes"],
-                        "mime_type": "audio/pcm;rate=16000"
-                    })
-
+                    await audio_in.put({"data": data["bytes"], "mime_type": "audio/pcm;rate=16000"})
                 elif "text" in data:
                     try:
                         parsed = json.loads(data["text"])
@@ -81,54 +69,51 @@ class VoiceHandler:
                             )
                     except json.JSONDecodeError:
                         pass
-
         except Exception as e:
             logger.debug(f"Browser→Queue ended: {e}")
 
-    async def _send_to_gemini(self, live_session):
-        """Send audio from mic queue → Gemini (like send_realtime in Google example)"""
+    async def _send_to_gemini(self, live_session, audio_in: asyncio.Queue):
         try:
             while True:
-                msg = await audio_queue_mic.get()
+                msg = await audio_in.get()
                 await live_session.send_realtime_input(audio=msg)
         except Exception as e:
             logger.debug(f"Queue→Gemini ended: {e}")
 
-    async def _receive_from_gemini(self, live_session, websocket: WebSocket, session_id: str, memory: MemoryManager):
-        """Receive from Gemini → put audio in output queue (like receive_audio in Google example)"""
+    async def _receive_from_gemini(self, live_session, websocket: WebSocket, session_id: str, memory: MemoryManager, audio_out: asyncio.Queue):
         transcript_buffer = ""
         try:
             while True:
                 turn = live_session.receive()
                 async for response in turn:
-                    if response.server_content and response.server_content.model_turn:
-                        for part in response.server_content.model_turn.parts:
-                            # Audio
+                    sc = response.server_content
+                    if not sc:
+                        continue
+
+                    if sc.model_turn:
+                        for part in sc.model_turn.parts:
+                            # Audio — put in queue, DO NOT clear here
                             if part.inline_data and isinstance(part.inline_data.data, bytes):
-                                audio_queue_output.put_nowait(part.inline_data.data)
-                            # Text transcript
+                                await audio_out.put(part.inline_data.data)
+                                logger.debug(f"🔊 Audio chunk: {len(part.inline_data.data)} bytes")
                             if hasattr(part, 'text') and part.text:
                                 transcript_buffer += part.text
                                 await websocket.send_json({"type": "transcript", "text": part.text})
 
-                    if response.server_content and response.server_content.turn_complete:
+                    if sc.turn_complete:
                         await websocket.send_json({"type": "turn_complete"})
                         if transcript_buffer.strip():
                             await memory.save_interaction(session_id, "model", transcript_buffer.strip())
                             transcript_buffer = ""
 
-                # Clear on interruption
-                while not audio_queue_output.empty():
-                    audio_queue_output.get_nowait()
-
         except Exception as e:
             logger.debug(f"Gemini→Queue ended: {e}")
 
-    async def _send_to_browser(self, websocket: WebSocket):
-        """Send audio from output queue → browser (like play_audio in Google example)"""
+    async def _send_to_browser(self, websocket: WebSocket, audio_out: asyncio.Queue):
         try:
             while True:
-                audio_bytes = await audio_queue_output.get()
+                audio_bytes = await audio_out.get()
                 await websocket.send_bytes(audio_bytes)
+                logger.debug(f"📤 Sent audio to browser: {len(audio_bytes)} bytes")
         except Exception as e:
             logger.debug(f"Queue→Browser ended: {e}")
